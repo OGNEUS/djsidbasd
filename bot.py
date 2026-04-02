@@ -1,12 +1,17 @@
+import asyncio
 import logging
-import requests
 import os
+import requests
+
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 load_dotenv()
 
@@ -15,9 +20,9 @@ CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 MANUAL_PAYMENT_PHONE = os.getenv("MANUAL_PAYMENT_PHONE")
 CURRENCY = os.getenv("CURRENCY", "USDT")
-support = os.getenv("SUPPORT")
+SUPPORT = os.getenv("SUPPORT")
 
-if not API_TOKEN or not CRYPTOBOT_TOKEN or not MANUAL_PAYMENT_PHONE:
+if not all([API_TOKEN, CRYPTOBOT_TOKEN, MANUAL_PAYMENT_PHONE, SUPPORT]):
     raise ValueError("❌ Не все переменные окружения заданы в .env! Проверь файл .env")
 
 PREMIUM_PACKAGES = {
@@ -35,9 +40,13 @@ TON_PRICE = 1.62
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=API_TOKEN, parse_mode=types.ParseMode.HTML)
+bot = Bot(
+    token=API_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(storage=storage)
 
 
 class OrderStates(StatesGroup):
@@ -45,7 +54,6 @@ class OrderStates(StatesGroup):
     waiting_username = State()
     waiting_payment = State()
     waiting_manual_payment = State()
-
 
 def get_usdt_rate_coingecko() -> float:
     url = "https://api.coingecko.com/api/v3/simple/price"
@@ -96,9 +104,7 @@ def get_invoice_status(invoice_id: int):
         logging.error(f"Ошибка проверки статуса: {e}")
         return "error"
 
-
-# ====================== ОБРАБОТЧИКИ ======================
-@dp.message_handler(commands=['start'])
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     text = """🚀 Добро пожаловать в StarGram
 Здесь ты можешь быстро и безопасно купить:
@@ -111,24 +117,26 @@ async def cmd_start(message: types.Message):
 
 Работаем быстро — ты получаешь результат без ожидания 👌
 Выбирай нужный раздел и оформляй покупку прямо сейчас!"""
+
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton("⭐ Звёзды", callback_data="category:stars"),
         types.InlineKeyboardButton("💠 TON", callback_data="category:ton")
     )
     kb.add(types.InlineKeyboardButton("💎 Telegram Premium", callback_data="category:premium"))
-    kb.add(types.InlineKeyboardButton("Поддержка", url=f'https://t.me/{support}'))
+    kb.add(types.InlineKeyboardButton("Поддержка", url=f'https://t.me/{SUPPORT}'))
+
     await message.answer(text, reply_markup=kb)
 
 
-@dp.callback_query_handler(lambda c: c.data == "cancel", state="*")
+@dp.callback_query(F.data == "cancel")
 async def callback_cancel(callback: types.CallbackQuery, state: FSMContext):
-    await state.finish()
+    await state.clear()
     await callback.message.edit_text("❌ Оформление заказа отменено.")
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("category:"))
+@dp.callback_query(F.data.startswith("category:"))
 async def callback_category(callback: types.CallbackQuery, state: FSMContext):
     category = callback.data.split(":")[1]
     await state.update_data(category=category)
@@ -136,27 +144,37 @@ async def callback_category(callback: types.CallbackQuery, state: FSMContext):
     if category == "stars":
         kb = types.InlineKeyboardMarkup(row_width=2)
         for stars, price in STAR_PACKAGES.items():
-            kb.insert(types.InlineKeyboardButton(f"{stars} ⭐ — {price} ₽", callback_data=f"option:stars:{stars}:{price}"))
+            kb.insert(
+                types.InlineKeyboardButton(f"{stars} ⭐ — {price} ₽",
+                                           callback_data=f"option:stars:{stars}:{price}")
+            )
         kb.add(types.InlineKeyboardButton("🔢 Другое количество звёзд", callback_data="stars:custom"))
         kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
         await callback.message.edit_text(
             "<b>⭐ Выберите пакет Звёзд Telegram</b>\n\n"
             f"💰 Цена за 1 звезду: <b>{STAR_PRICE_PER_UNIT} ₽</b>",
             reply_markup=kb
         )
+
     elif category == "premium":
         kb = types.InlineKeyboardMarkup(row_width=2)
         for months, price in PREMIUM_PACKAGES.items():
-            kb.insert(types.InlineKeyboardButton(f"{months} месяцев — {price} ₽", callback_data=f"option:premium:{months}:{price}"))
+            kb.insert(
+                types.InlineKeyboardButton(f"{months} месяцев — {price} ₽",
+                                           callback_data=f"option:premium:{months}:{price}")
+            )
         kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
         await callback.message.edit_text("<b>💎 Выберите длительность Telegram Premium</b>", reply_markup=kb)
+
     elif category == "ton":
         await callback.message.edit_text("💠 Введите сумму TON для покупки (минимум 0.1 TON):")
-        await OrderStates.waiting_amount.set()
+        await state.set_state(OrderStates.waiting_amount)
+
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("option:"))
+@dp.callback_query(F.data.startswith("option:"))
 async def callback_option(callback: types.CallbackQuery, state: FSMContext):
     _, cat, val1, val2 = callback.data.split(":")
     if cat == "stars":
@@ -165,26 +183,27 @@ async def callback_option(callback: types.CallbackQuery, state: FSMContext):
         product_desc = f"{stars} ⭐ Звёзд Telegram"
         await state.update_data(category="stars", amount=stars, price_rub=price_rub, product_desc=product_desc)
         text = f"<b>Вы выбрали:</b>\n{product_desc}\n💰 Цена: <b>{price_rub} ₽</b>\n\nВведите ваш Telegram никнейм:"
-    elif cat == "premium":
+    else:
         months = int(val1)
         price_rub = int(val2)
         product_desc = f"{months} месяцев Telegram Premium"
         await state.update_data(category="premium", amount=months, price_rub=price_rub, product_desc=product_desc)
         text = f"<b>Вы выбрали:</b>\n{product_desc}\n💰 Цена: <b>{price_rub} ₽</b>\n\nВведите ваш Telegram никнейм:"
+
     await callback.message.edit_text(text)
-    await OrderStates.waiting_username.set()
+    await state.set_state(OrderStates.waiting_username)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "stars:custom")
+@dp.callback_query(F.data == "stars:custom")
 async def callback_custom_stars(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"✨ Введите количество звёзд (минимум 10):\nЦена за 1 звезду: {STAR_PRICE_PER_UNIT} ₽")
-    await OrderStates.waiting_amount.set()
+    await state.set_state(OrderStates.waiting_amount)
     await callback.answer()
 
 
-@dp.message_handler(state=OrderStates.waiting_amount)
+@dp.message(StateFilter(OrderStates.waiting_amount))
 async def process_amount(message: types.Message, state: FSMContext):
     data = await state.get_data()
     category = data.get("category")
@@ -200,7 +219,7 @@ async def process_amount(message: types.Message, state: FSMContext):
             await state.update_data(amount=amount, price_rub=price_rub, product_desc=product_desc)
             await message.answer(
                 f"<b>Вы выбрали:</b>\n{product_desc}\n💰 Цена: <b>{price_rub} ₽</b>\n\nВведите ваш Telegram никнейм:")
-            await OrderStates.waiting_username.set()
+            await state.set_state(OrderStates.waiting_username)
         except ValueError:
             await message.answer("❗ Введите целое число")
 
@@ -215,14 +234,14 @@ async def process_amount(message: types.Message, state: FSMContext):
             await state.update_data(amount=amount, price_usdt=price_usdt, product_desc=product_desc)
             await message.answer(
                 f"<b>Вы выбрали:</b>\n{product_desc}\n💰 Цена: <b>{price_usdt} USDT</b>\n\nВведите ваш TON-кошелёк:")
-            await OrderStates.waiting_username.set()
+            await state.set_state(OrderStates.waiting_username)
         except ValueError:
             await message.answer("❗ Введите число (например: 1.5 или 5)")
     else:
         await message.answer("❌ Неизвестная категория. Начните заново /start")
 
 
-@dp.message_handler(state=OrderStates.waiting_username)
+@dp.message(StateFilter(OrderStates.waiting_username))
 async def process_username(message: types.Message, state: FSMContext):
     username = message.text.strip()
     data = await state.get_data()
@@ -248,10 +267,10 @@ async def process_username(message: types.Message, state: FSMContext):
 
     await message.answer(confirm_text, reply_markup=kb)
     await state.update_data(username=username)
-    await OrderStates.waiting_payment.set()
+    await state.set_state(OrderStates.waiting_payment)
 
 
-@dp.callback_query_handler(lambda c: c.data == "confirm_pay:crypto", state="*")
+@dp.callback_query(F.data == "confirm_pay:crypto")
 async def callback_confirm_pay_crypto(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     product_desc = data["product_desc"]
@@ -273,14 +292,15 @@ async def callback_confirm_pay_crypto(callback: types.CallbackQuery, state: FSMC
 
     if not invoice_response.get("ok"):
         await callback.message.edit_text("❌ Ошибка создания счёта. Попробуйте позже.")
-        await state.finish()
+        await state.clear()
         return
 
     result = invoice_response["result"]
     invoice_id = result["invoice_id"]
     bot_invoice_url = result["bot_invoice_url"]
 
-    await state.update_data(invoice_id=invoice_id, payment_type="crypto", amount_usdt=amount_usdt, price_rub=price_rub)
+    await state.update_data(invoice_id=invoice_id, payment_type="crypto",
+                            amount_usdt=amount_usdt, price_rub=price_rub)
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton("💸 Оплатить USDT", url=bot_invoice_url))
@@ -297,13 +317,10 @@ async def callback_confirm_pay_crypto(callback: types.CallbackQuery, state: FSMC
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "confirm_pay:manual", state="*")
+@dp.callback_query(F.data == "confirm_pay:manual")
 async def callback_confirm_pay_manual(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if data.get("price_rub") is None:
-        price_rub = get_usdt_rate_coingecko() * data.get("price_usdt", 0)
-    else:
-        price_rub = data["price_rub"]
+    price_rub = data.get("price_rub") or (get_usdt_rate_coingecko() * data.get("price_usdt", 0))
 
     product_desc = data["product_desc"]
     username = data["username"]
@@ -316,11 +333,11 @@ async def callback_confirm_pay_manual(callback: types.CallbackQuery, state: FSMC
         f"Товар: {product_desc}\nНик/кошелёк: {username}"
     )
     await state.update_data(payment_type="manual")
-    await OrderStates.waiting_manual_payment.set()
+    await state.set_state(OrderStates.waiting_manual_payment)
     await callback.answer()
 
 
-@dp.message_handler(state=OrderStates.waiting_manual_payment, content_types=[types.ContentType.PHOTO, types.ContentType.DOCUMENT])
+@dp.message(StateFilter(OrderStates.waiting_manual_payment), F.photo | F.document)
 async def process_manual_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_mention = message.from_user.get_mention()
@@ -339,10 +356,10 @@ async def process_manual_payment_proof(message: types.Message, state: FSMContext
         await bot.send_document(ADMIN_ID, message.document.file_id, caption=order_text)
 
     await message.answer("✅ Скриншот отправлен администратору!\nОжидайте подтверждения.")
-    await state.finish()
+    await state.clear()
 
 
-@dp.callback_query_handler(lambda c: c.data == "check_payment", state="*")
+@dp.callback_query(F.data == "check_payment")
 async def callback_check_payment(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     invoice_id = data.get("invoice_id")
@@ -367,13 +384,16 @@ async def callback_check_payment(callback: types.CallbackQuery, state: FSMContex
 
         await bot.send_message(ADMIN_ID, order_text)
         await callback.message.edit_text("✅ <b>Оплата подтверждена!</b>\nОжидайте выдачи товара.")
-        await state.finish()
+        await state.clear()
 
     elif status == "active":
         await callback.answer("⏳ Оплата ещё не прошла. Попробуйте через 10–15 секунд.")
     else:
         await callback.answer(f"Статус: {status}. Если оплатили — напишите админу.")
 
+async def main():
+    await dp.start_polling(bot)
 
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
