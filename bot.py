@@ -10,6 +10,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 API_TOKEN = os.getenv("API_TOKEN")
 CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
@@ -21,12 +22,7 @@ SUPPORT = os.getenv("SUPPORT")
 if not all([API_TOKEN, CRYPTOBOT_TOKEN, MANUAL_PAYMENT_PHONE, SUPPORT]):
     raise ValueError("❌ Не все переменные окружения заданы в .env! Проверь файл .env")
 
-PREMIUM_PACKAGES = {
-    3: 1030,
-    6: 1400,
-    12: 2500,
-}
-
+PREMIUM_PACKAGES = {3: 1030, 6: 1400, 12: 2500}
 STAR_PRICE_PER_UNIT = 1.4
 STAR_PACKAGES = {
     50: 70, 100: 140, 200: 280, 300: 420, 400: 560,
@@ -114,15 +110,15 @@ async def cmd_start(message: types.Message):
 Работаем быстро — ты получаешь результат без ожидания 👌
 Выбирай нужный раздел и оформляй покупку прямо сейчас!"""
 
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton("⭐ Звёзды", callback_data="category:stars"),
-        types.InlineKeyboardButton("💠 TON", callback_data="category:ton")
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="⭐ Звёзды", callback_data="category:stars"),
+        types.InlineKeyboardButton(text="💠 TON", callback_data="category:ton")
     )
-    kb.add(types.InlineKeyboardButton("💎 Telegram Premium", callback_data="category:premium"))
-    kb.add(types.InlineKeyboardButton("Поддержка", url=f'https://t.me/{SUPPORT}'))
+    builder.row(types.InlineKeyboardButton(text="💎 Telegram Premium", callback_data="category:premium"))
+    builder.row(types.InlineKeyboardButton(text="Поддержка", url=f'https://t.me/{SUPPORT}'))
 
-    await message.answer(text, reply_markup=kb)
+    await message.answer(text, reply_markup=builder.as_markup())
 
 
 @dp.callback_query(F.data == "cancel")
@@ -138,30 +134,36 @@ async def callback_category(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     if category == "stars":
-        kb = types.InlineKeyboardMarkup(row_width=2)
+        builder = InlineKeyboardBuilder()
         for stars, price in STAR_PACKAGES.items():
-            kb.insert(
-                types.InlineKeyboardButton(f"{stars} ⭐ — {price} ₽",
-                                           callback_data=f"option:stars:{stars}:{price}")
+            builder.button(
+                text=f"{stars} ⭐ — {price} ₽",
+                callback_data=f"option:stars:{stars}:{price}"
             )
-        kb.add(types.InlineKeyboardButton("🔢 Другое количество звёзд", callback_data="stars:custom"))
-        kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+        builder.row(types.InlineKeyboardButton(text="🔢 Другое количество звёзд", callback_data="stars:custom"))
+        builder.row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+        builder.adjust(2)
 
         await callback.message.edit_text(
             "<b>⭐ Выберите пакет Звёзд Telegram</b>\n\n"
             f"💰 Цена за 1 звезду: <b>{STAR_PRICE_PER_UNIT} ₽</b>",
-            reply_markup=kb
+            reply_markup=builder.as_markup()
         )
 
     elif category == "premium":
-        kb = types.InlineKeyboardMarkup(row_width=2)
+        builder = InlineKeyboardBuilder()
         for months, price in PREMIUM_PACKAGES.items():
-            kb.insert(
-                types.InlineKeyboardButton(f"{months} месяцев — {price} ₽",
-                                           callback_data=f"option:premium:{months}:{price}")
+            builder.button(
+                text=f"{months} месяцев — {price} ₽",
+                callback_data=f"option:premium:{months}:{price}"
             )
-        kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
-        await callback.message.edit_text("<b>💎 Выберите длительность Telegram Premium</b>", reply_markup=kb)
+        builder.row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+        builder.adjust(2)
+
+        await callback.message.edit_text(
+            "<b>💎 Выберите длительность Telegram Premium</b>",
+            reply_markup=builder.as_markup()
+        )
 
     elif category == "ton":
         await callback.message.edit_text("💠 Введите сумму TON для покупки (минимум 0.1 TON):")
@@ -256,12 +258,13 @@ async def process_username(message: types.Message, state: FSMContext):
 
 Выберите способ оплаты:"""
 
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("💸 Оплатить криптой (USDT)", callback_data="confirm_pay:crypto"))
-    kb.add(types.InlineKeyboardButton("💳 Оплатить по номеру", callback_data="confirm_pay:manual"))
-    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💸 Оплатить криптой (USDT)", callback_data="confirm_pay:crypto")
+    builder.button(text="💳 Оплатить по номеру", callback_data="confirm_pay:manual")
+    builder.button(text="❌ Отмена", callback_data="cancel")
+    builder.adjust(1)
 
-    await message.answer(confirm_text, reply_markup=kb)
+    await message.answer(confirm_text, reply_markup=builder.as_markup())
     await state.update_data(username=username)
     await state.set_state(OrderStates.waiting_payment)
 
@@ -298,17 +301,18 @@ async def callback_confirm_pay_crypto(callback: types.CallbackQuery, state: FSMC
     await state.update_data(invoice_id=invoice_id, payment_type="crypto",
                             amount_usdt=amount_usdt, price_rub=price_rub)
 
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("💸 Оплатить USDT", url=bot_invoice_url))
-    kb.add(types.InlineKeyboardButton("🔄 Проверить оплату", callback_data="check_payment"))
-    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💸 Оплатить USDT", url=bot_invoice_url)
+    builder.button(text="🔄 Проверить оплату", callback_data="check_payment")
+    builder.button(text="❌ Отмена", callback_data="cancel")
+    builder.adjust(1)
 
     await callback.message.edit_text(
         f"<b>✅ Счёт создан!</b>\n\n"
         f"💰 Сумма: <b>{amount_usdt} USDT</b>\n"
         f"{kurs_text}"
         f"Оплатите по кнопке ниже и нажмите «Проверить оплату»",
-        reply_markup=kb
+        reply_markup=builder.as_markup()
     )
     await callback.answer()
 
@@ -336,7 +340,9 @@ async def callback_confirm_pay_manual(callback: types.CallbackQuery, state: FSMC
 @dp.message(StateFilter(OrderStates.waiting_manual_payment), F.photo | F.document)
 async def process_manual_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    user_mention = message.from_user.get_mention()
+    user = message.from_user
+    user_mention = f"@{user.username}" if user.username else user.full_name
+
     price_rub = get_usdt_rate_coingecko() * data.get("price_usdt", data.get("price_rub", 0))
 
     order_text = f"""<b>✅ НОВАЯ ЗАЯВКА (Ручная оплата)</b>
@@ -366,7 +372,9 @@ async def callback_check_payment(callback: types.CallbackQuery, state: FSMContex
     status = get_invoice_status(invoice_id)
 
     if status == "paid":
-        user_mention = callback.from_user.get_mention()
+        user = callback.from_user
+        user_mention = f"@{user.username}" if user.username else user.full_name
+
         price_rub = data.get('price_rub')
         amount_usdt = data.get('amount_usdt', '—')
         summa_str = f"{price_rub} ₽ (~{amount_usdt} USDT)" if price_rub else f"{amount_usdt} USDT"
