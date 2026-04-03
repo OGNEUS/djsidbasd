@@ -18,8 +18,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 MANUAL_PAYMENT_PHONE = os.getenv("MANUAL_PAYMENT_PHONE")
 CURRENCY = os.getenv("CURRENCY", "USDT")
 SUPPORT = os.getenv("SUPPORT")
+REVIEWS = os.getenv("REVIEWS")
 
-if not all([API_TOKEN, CRYPTOBOT_TOKEN, MANUAL_PAYMENT_PHONE, SUPPORT]):
+if not all([API_TOKEN, CRYPTOBOT_TOKEN, MANUAL_PAYMENT_PHONE, SUPPORT, REVIEWS]):
     raise ValueError("❌ Не все переменные окружения заданы в .env! Проверь файл .env")
 
 PREMIUM_PACKAGES = {3: 1030, 6: 1400, 12: 2500}
@@ -47,57 +48,46 @@ class OrderStates(StatesGroup):
     waiting_payment = State()
     waiting_manual_payment = State()
 
-def get_usdt_rate_coingecko() -> float:
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {"ids": "tether", "vs_currencies": "rub"}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        if "tether" in data and "rub" in data["tether"]:
-            rate = float(data["tether"]["rub"])
-            logging.info(f"CoinGecko USDT/RUB rate: {rate}")
-            return rate
-    except Exception as e:
-        logging.error(f"Ошибка получения курса с CoinGecko: {e}")
-    logging.warning("Используем fallback курс 90 RUB за 1 USDT")
-    return 90.0
+def get_main_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="⭐ Звёзды", callback_data="category:stars"),
+        types.InlineKeyboardButton(text="💠 TON", callback_data="category:ton")
+    )
+    builder.row(types.InlineKeyboardButton(text="💎 Telegram Premium", callback_data="category:premium"))
+    builder.row(
+        types.InlineKeyboardButton(text="👨‍💼 Поддержка", url=f'https://t.me/{SUPPORT}'),
+        types.InlineKeyboardButton(text="📝 Отзывы", url=f'https://t.me/{REVIEWS}')
+    )
+    return builder.as_markup()
 
 
-def create_cryptobot_invoice(amount_usdt: float, description: str):
-    url = "https://pay.crypt.bot/api/createInvoice"
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTOBOT_TOKEN,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "amount": str(round(amount_usdt, 4)),
-        "asset": CURRENCY,
-        "description": description[:1024],
-    }
-    try:
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
-        return r.json()
-    except Exception as e:
-        logging.error(f"Ошибка создания инвойса: {e}")
-        return {"ok": False}
+def get_stars_keyboard():
+    builder = InlineKeyboardBuilder()
+    for stars, price in STAR_PACKAGES.items():
+        builder.button(
+            text=f"{stars} ⭐ — {price} ₽",
+            callback_data=f"option:stars:{stars}:{price}"
+        )
+    builder.row(types.InlineKeyboardButton(text="🔢 Другое количество звёзд", callback_data="stars:custom"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
+    builder.adjust(2)
+    return builder.as_markup()
 
 
-def get_invoice_status(invoice_id: int):
-    url = "https://pay.crypt.bot/api/getInvoices"
-    headers = {"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
-    params = {"invoice_ids": str(invoice_id)}
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=10)
-        data = r.json()
-        if data.get("ok") and data.get("result"):
-            return data["result"][0]["status"]
-        return "error"
-    except Exception as e:
-        logging.error(f"Ошибка проверки статуса: {e}")
-        return "error"
+def get_premium_keyboard():
+    builder = InlineKeyboardBuilder()
+    for months, price in PREMIUM_PACKAGES.items():
+        builder.button(
+            text=f"{months} месяцев — {price} ₽",
+            callback_data=f"option:premium:{months}:{price}"
+        )
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
+    builder.adjust(2)
+    return builder.as_markup()
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+
+async def show_main_menu(message: types.Message, edit: bool = False):
     text = """🚀 Добро пожаловать в StarGram
 Здесь ты можешь быстро и безопасно купить:
 ⭐ Звёзды Telegram
@@ -110,22 +100,90 @@ async def cmd_start(message: types.Message):
 Работаем быстро — ты получаешь результат без ожидания 👌
 Выбирай нужный раздел и оформляй покупку прямо сейчас!"""
 
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(text="⭐ Звёзды", callback_data="category:stars"),
-        types.InlineKeyboardButton(text="💠 TON", callback_data="category:ton")
+    keyboard = get_main_keyboard()
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
+
+
+async def show_stars_menu(message: types.Message, edit: bool = False):
+    text = (
+        "<b>⭐ Выберите пакет Звёзд Telegram</b>\n\n"
+        f"💰 Цена за 1 звезду: <b>{STAR_PRICE_PER_UNIT} ₽</b>"
     )
-    builder.row(types.InlineKeyboardButton(text="💎 Telegram Premium", callback_data="category:premium"))
-    builder.row(types.InlineKeyboardButton(text="Поддержка", url=f'https://t.me/{SUPPORT}'))
+    keyboard = get_stars_keyboard()
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
 
-    await message.answer(text, reply_markup=builder.as_markup())
+
+async def show_premium_menu(message: types.Message, edit: bool = False):
+    text = "<b>💎 Выберите длительность Telegram Premium</b>"
+    keyboard = get_premium_keyboard()
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
 
 
-@dp.callback_query(F.data == "cancel")
-async def callback_cancel(callback: types.CallbackQuery, state: FSMContext):
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await show_main_menu(message)
+
+
+@dp.message(Command("buy_stars"))
+async def cmd_buy_stars(message: types.Message, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("❌ Оформление заказа отменено.")
-    await callback.answer()
+    await state.update_data(category="stars")
+    await show_stars_menu(message, edit=False)
+
+
+@dp.message(Command("buy_ton"))
+async def cmd_buy_ton(message: types.Message, state: FSMContext):
+    await state.clear()
+    await state.update_data(category="ton")
+    await message.answer("💠 Введите сумму TON для покупки (минимум 0.1 TON):")
+    await state.set_state(OrderStates.waiting_amount)
+
+
+@dp.message(Command("premium"))
+async def cmd_premium(message: types.Message, state: FSMContext):
+    await state.clear()
+    await show_premium_menu(message, edit=False)
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    help_text = f"""<b>📋 Помощь и команды:</b>
+
+• /start — Главное меню бота
+• /buy_stars — Купить ⭐ Звёзды Telegram
+• /buy_ton — Купить 💠 TON
+• /premium — Купить 💎 Telegram Premium
+• /help — Показать эту справку
+
+<b>Как пользоваться:</b>
+1. Выберите товар в главном меню или по команде
+2. Укажите количество/срок
+3. Введите никнейм или кошелёк
+4. Выберите способ оплаты
+5. Оплатите и получите товар мгновенно!
+
+Если возникли вопросы — напишите в поддержку @{SUPPORT}
+
+📝 <a href="https://t.me/{REVIEWS}">Отзывы</a>"""
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🔙 В главное меню", callback_data="back"))
+    await message.answer(help_text, reply_markup=builder.as_markup(), disable_web_page_preview=True)
+
+
+@dp.callback_query(F.data == "back")
+async def callback_back(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show_main_menu(callback.message, edit=True)
+    await callback.answer("🔙 Возвращаемся в главное меню")
 
 
 @dp.callback_query(F.data.startswith("category:"))
@@ -134,37 +192,9 @@ async def callback_category(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     if category == "stars":
-        builder = InlineKeyboardBuilder()
-        for stars, price in STAR_PACKAGES.items():
-            builder.button(
-                text=f"{stars} ⭐ — {price} ₽",
-                callback_data=f"option:stars:{stars}:{price}"
-            )
-        builder.row(types.InlineKeyboardButton(text="🔢 Другое количество звёзд", callback_data="stars:custom"))
-        builder.row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
-        builder.adjust(2)
-
-        await callback.message.edit_text(
-            "<b>⭐ Выберите пакет Звёзд Telegram</b>\n\n"
-            f"💰 Цена за 1 звезду: <b>{STAR_PRICE_PER_UNIT} ₽</b>",
-            reply_markup=builder.as_markup()
-        )
-
+        await show_stars_menu(callback.message, edit=True)
     elif category == "premium":
-        builder = InlineKeyboardBuilder()
-        for months, price in PREMIUM_PACKAGES.items():
-            builder.button(
-                text=f"{months} месяцев — {price} ₽",
-                callback_data=f"option:premium:{months}:{price}"
-            )
-        builder.row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
-        builder.adjust(2)
-
-        await callback.message.edit_text(
-            "<b>💎 Выберите длительность Telegram Premium</b>",
-            reply_markup=builder.as_markup()
-        )
-
+        await show_premium_menu(callback.message, edit=True)
     elif category == "ton":
         await callback.message.edit_text("💠 Введите сумму TON для покупки (минимум 0.1 TON):")
         await state.set_state(OrderStates.waiting_amount)
@@ -195,6 +225,7 @@ async def callback_option(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "stars:custom")
 async def callback_custom_stars(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(category="stars")
     await callback.message.edit_text(
         f"✨ Введите количество звёзд (минимум 10):\nЦена за 1 звезду: {STAR_PRICE_PER_UNIT} ₽")
     await state.set_state(OrderStates.waiting_amount)
@@ -261,7 +292,7 @@ async def process_username(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.button(text="💸 Оплатить криптой (USDT)", callback_data="confirm_pay:crypto")
     builder.button(text="💳 Оплатить по номеру", callback_data="confirm_pay:manual")
-    builder.button(text="❌ Отмена", callback_data="cancel")
+    builder.button(text="🔙 Назад", callback_data="back")
     builder.adjust(1)
 
     await message.answer(confirm_text, reply_markup=builder.as_markup())
@@ -304,7 +335,7 @@ async def callback_confirm_pay_crypto(callback: types.CallbackQuery, state: FSMC
     builder = InlineKeyboardBuilder()
     builder.button(text="💸 Оплатить USDT", url=bot_invoice_url)
     builder.button(text="🔄 Проверить оплату", callback_data="check_payment")
-    builder.button(text="❌ Отмена", callback_data="cancel")
+    builder.button(text="🔙 Назад", callback_data="back")
     builder.adjust(1)
 
     await callback.message.edit_text(
@@ -394,6 +425,57 @@ async def callback_check_payment(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("⏳ Оплата ещё не прошла. Попробуйте через 10–15 секунд.")
     else:
         await callback.answer(f"Статус: {status}. Если оплатили — напишите админу.")
+
+
+def get_usdt_rate_coingecko() -> float:
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {"ids": "tether", "vs_currencies": "rub"}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        if "tether" in data and "rub" in data["tether"]:
+            rate = float(data["tether"]["rub"])
+            logging.info(f"CoinGecko USDT/RUB rate: {rate}")
+            return rate
+    except Exception as e:
+        logging.error(f"Ошибка получения курса с CoinGecko: {e}")
+    logging.warning("Используем fallback курс 90 RUB за 1 USDT")
+    return 90.0
+
+
+def create_cryptobot_invoice(amount_usdt: float, description: str):
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {
+        "Crypto-Pay-API-Token": CRYPTOBOT_TOKEN,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "amount": str(round(amount_usdt, 4)),
+        "asset": CURRENCY,
+        "description": description[:1024],
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        return r.json()
+    except Exception as e:
+        logging.error(f"Ошибка создания инвойса: {e}")
+        return {"ok": False}
+
+
+def get_invoice_status(invoice_id: int):
+    url = "https://pay.crypt.bot/api/getInvoices"
+    headers = {"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
+    params = {"invoice_ids": str(invoice_id)}
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        data = r.json()
+        if data.get("ok") and data.get("result"):
+            return data["result"][0]["status"]
+        return "error"
+    except Exception as e:
+        logging.error(f"Ошибка проверки статуса: {e}")
+        return "error"
+
 
 async def main():
     await dp.start_polling(bot)
